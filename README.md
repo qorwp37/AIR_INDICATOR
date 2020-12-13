@@ -9,4 +9,5 @@
 3. 이렇게 만들어진 제품의 동작영상을 xx 에서 볼 수 있습니다. 
 
 [환경표시기 회로도]
+클릭하면 훨씬 더 잘 보입니다.
 <img src="https://user-images.githubusercontent.com/58552452/102001432-8e022b80-3d35-11eb-84a0-17b4a784c70e.PNG" width="90%"></img>
