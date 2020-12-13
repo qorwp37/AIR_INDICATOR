@@ -15,6 +15,10 @@ https://blog.naver.com/PostView.nhn?blogId=qorwp37&Redirect=View&logNo=222172059
 2. Humidity/Temperature Sensor : HTU21D (I2C)
 3. Dust sensor : GP2Y1010AU0F (ADC) 
 
+[사용 툴]
+1. 회로설계 : ORCAD
+2. 펌웨어 : CodevisionAVR 
+
 
 [환경표시기 회로도]
 클릭하면 훨씬 더 잘 보입니다.
