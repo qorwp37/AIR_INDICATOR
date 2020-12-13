@@ -5,7 +5,7 @@
 - 기타 정보: 환경표시기 H/W를 구성하는 회로와, F/W를 이루는 코드입니다.
 
 1. 하드웨어를 구성하는 회로도는 이 문서 아래에서 볼 수 있습니다.
-2. 소프트웨어를 구현한 코드는 "환경표시기 펌웨어 코드" 에서 볼 수 있습니다. (include 하는 C파일에 정의된 함수들은 함수 이름에서 어느정도 기능을 알 수 있기때문에 같이 올리지 않았습니다.)
+2. 소프트웨어를 구현한 코드는 [환경표시기 펌웨어 코드](https://github.com/qorwp37/AIR_INDICATOR/blob/main/%ED%99%98%EA%B2%BD%ED%91%9C%EC%8B%9C%EA%B8%B0%20%ED%8E%8C%EC%9B%A8%EC%96%B4%20%EC%BD%94%EB%93%9C) 에서 볼 수 있습니다. (include 하는 C파일에 정의된 함수들은 함수 이름에서 어느정도 기능을 알 수 있기때문에 같이 올리지 않았습니다.)
 3. 이렇게 만들어진 제품의 동작영상을 아래 링크에서 볼 수 있습니다.
 https://blog.naver.com/PostView.nhn?blogId=qorwp37&Redirect=View&logNo=222172059215&categoryNo=1&isAfterWrite=true&isMrblogPost=false&isHappyBeanLeverage=true&contentLength=2703
 
