@@ -1,0 +1,1004 @@
+//인터럽트 버전
+//include*************section m1*****************
+#include <stdio.h>
+#include <delay.h>
+#include <mega128.h>
+#include "baek_def_ver1.h"
+#include "baek_lcd.h"
+
+
+//mapping*************section m2*****************
+#define TEMP_DATA 0xE3
+#define HUMID_DATA 0xE5
+#define DUST_DATA 0x02
+#define ALL_DATA 0x03
+#define TEMP_FLAG 0
+#define HUMID_FLAG 1
+#define DUST_FLAG 2
+#define ALL_FLAG 3
+
+
+//global_value********section m3*****************
+//CRC CHECK 할때 쓰는 masking 정보들//어디 마스킹할지 저장.
+u32 mask_arr[16] =
+{0xff8000, 0x7fc000, 0x3fe000,
+    0x1ff000, 0xff800, 0x7fc00,
+    0x3fe00, 0x1ff00, 0xff80,
+    0x7fc0, 0x3fe0, 0x1ff0,
+    0xff8, 0x7fc, 0x3fe, 0x1ff };
+
+//CRC CHECK 할때 쓰는 masking 정보들//쉬프트 얼마나 하는지 저장.
+u32 shift_arr[16] =
+{
+    15, 14, 13, 12, 11, 10, 9, 8 , 7, 6, 5, 4, 3, 2, 1, 0
+};
+
+//CRC 체크할때 XOR 시에 최상위 비트 검출할 때 사용
+u32 msb_mask = 0x800000;
+
+//데이타 평균치 낼때 쓰는 변수들
+double tmp_temp = 0;
+double tmp_humid = 0;
+int num_temp = 0;
+int num_humid = 0;
+//measure_flag == 0 -> temp 측정
+//measure_flag == 1 -> humid 측정
+//measure_flag == 2 -> dust 측정
+//measure_flag == 3 -> all_data 측정
+int measure_flag = -1;
+//먼지 측정할 때 쓰는 변수들
+int dust_avg = 0;
+double fvol_sum = 0;
+int first_flag = 0;
+int disconnect_flag = 0;
+int start_flag = 0;
+int cnt_flag = 0;
+int key_flag = 0;
+u08 new_key = 0;
+double old_data;
+int first_avg_flag = 0;
+int first_star_flag = 0;
+int all_ver_data_flag = TEMP_FLAG;
+u08 spacial_char[3]={0xDF,0,0};
+u08 pass_flag = 0;
+u08 buzzer_flag = 0;
+u08 silent_mode_flag = 0;
+u32 silent_mode_cnt = 0;
+
+//function************section m4*****************
+void AIR_DISPLAY(u32 data_type);
+u32 HTU21D_DATA_Request(u32 data_type);
+interrupt [TIM0_OVF] void Measure_interrupt (void);
+void Round_AND_Display(double num);
+void END_DISPLAY(void);
+char* Round_data(double num);
+void Display_data(char* data_buffer);
+void dust_adc_start();
+void dust_adc_first();
+u32 CRC_check(u32 body, u32 gener);
+void lcd_print_data_air(u08* data, u08 n_bytes);
+
+void error(void)
+{
+    disconnect_flag = 1;
+    lcd_control_write(0x80);
+    lcd_print_data("Check Se",8);
+    lcd_control_write(0xC0);
+    lcd_print_data("nsor!!!!",8);
+}
+
+
+//ALL DATA 순환시키는 타이머
+interrupt [TIM1_OVF] void timer1_ovf (void)
+{
+
+    if (all_ver_data_flag == TEMP_FLAG)
+    {
+        all_ver_data_flag = HUMID_FLAG;
+        measure_flag = HUMID_FLAG;
+        TCNT1 = 0x7010;
+    }
+    else if(all_ver_data_flag == HUMID_FLAG)
+    {
+        all_ver_data_flag = DUST_FLAG;
+        TCCR0 = 0x00;
+        TCNT0 = 0x00;
+        num_temp = 0;
+        num_humid = 0;
+        dust_avg = 0;
+        fvol_sum = 0;
+        measure_flag = DUST_FLAG;
+
+        first_flag = 1;
+        TCCR3B |= 0x02;
+        TCNT1 = 0xA200;
+
+    }
+    else
+    {
+        all_ver_data_flag = TEMP_FLAG;
+        END_DISPLAY();
+        measure_flag = TEMP_FLAG;
+
+        TCCR0 = 0x07;
+        TCNT1 = 0x8000;
+    }
+
+}
+//먼지센서에서 ADC 읽어오는 타이머
+interrupt [TIM3_COMPB] void timer3_comp (void)
+{
+
+   u32 data;
+   if(disconnect_flag != 1)
+   {
+        if (first_flag == 1)
+                {
+                    //딜레이를 없애기위해 먼저 보여주고 시작.
+                    //사실 PWM을 먼저 측정하게 설정하면 되긴함.
+                    dust_adc_first();
+                    first_flag = 0;
+                }
+                dust_adc_start();
+       }
+   }
+
+
+
+interrupt [EXT_INT2] void SW_1 (void)
+{
+    //TCCR1B = 0x0;
+    if(start_flag == 1)
+    {
+        TCCR1B = 0x0;
+        cnt_flag = 0;
+
+
+        //circul_flag = 0;
+        AIR_DISPLAY(TEMP_FLAG);
+    }
+}
+interrupt [EXT_INT3] void SW_2 (void)
+{
+    //TCCR1B = 0x0;
+    if(start_flag == 1)
+    {
+        TCCR1B = 0x0;
+        cnt_flag = 0;
+
+        AIR_DISPLAY(HUMID_FLAG);
+    }
+}
+interrupt [EXT_INT6] void SW_3 (void)
+{
+    //TCCR1B = 0x0;
+    if(start_flag == 1)
+    {
+        TCCR1B = 0x0;
+        cnt_flag = 0;
+
+
+        AIR_DISPLAY(DUST_FLAG);
+
+    }
+}
+interrupt [EXT_INT7] void SW_4 (void)
+{
+    if(start_flag == 1)
+    {
+        AIR_DISPLAY(ALL_FLAG);
+    }
+}
+
+interrupt [EXT_INT5] void Sensor_Check (void)
+{
+    int i = 0;
+    if(PINE.5 == 0)
+    {
+        error();
+
+        buzzer_flag = 1;
+
+
+    }
+    else
+    {
+        disconnect_flag = 0;
+       buzzer_flag = 0;
+    }
+    //SREG = 0x0;
+}
+
+//main****************section m5*****************
+
+
+
+void main(void)
+{
+    u32 i = 0;
+    u32 j = 0;
+    //PORT INIT**********************************
+    //*************PORTE***
+    //PWM만 출력 6, 7 은 인터럽트 입력 및 풀업
+    DDRE =  0b00011000;
+    PORTE = 0b11000000;
+    //DDRE =  0b00000000;
+    //PORTE = 0b11111000;
+
+
+    //*************LCD DATA PORT INIT************
+    DDRA = 0x00;
+    PORTA = 0x00;
+
+    //*************LCD CONTROL PORT INIT*********
+    DDRC = 0xF0;
+    PORTC = 0x00;
+
+    //************TWI PORT INIT******************
+    //2, 3 번핀은 인터럽트 입력, 풀업 6~7은 다이오드출력
+    DDRD = 0b11110000;
+    PORTD = 0b00001100;
+
+    //ADC PORT INIT
+    DDRF =  0b11000000;
+    //PORTF = 0x00;
+    PORTF = 0b00000000;
+
+    //SW, PWM PORT INIT
+    DDRB=0x00;
+    PORTB = 0x00;
+
+
+    //TIMER/COUNTER"1" INTRREUT ENABLE
+    TIMSK = 0x04;
+    //T/C1 nomal mode, division clk/1024
+    //Thus, 1/11.0592M * 256 * 65536 = 1.517sec
+    //TCCR1B = 0x05;
+    TCCR1A = 0x00;
+    TCCR1B = 0x00;
+    TCCR1C = 0x0;
+    //T/C register
+    TCNT1 = 0xA473;
+
+    //***********timer/counter0 init************
+    //overflow interrupt enable
+    TIMSK |= 0x01;
+    //nomal mode, division clk/1024
+    //-> 클럭 시작 TCCR0 = 0x07;
+    //-> 클럭 차단
+    TCCR0 = 0x00;
+    //clock value
+    TCNT0 = 0x00;
+    //u-p interrupt enable
+    SREG = 0x80;
+
+    //TIMER/COUNTER3 INIT
+    //FAST_PWM, MODE_14 , 비교매치에서 SET, 분주 8
+
+    ETIMSK = 0x08;
+    //켤때만 이거 사용
+    TCCR3A = 0b11110010;
+    TCCR3B = 0b00011000;
+    TCCR3C = 0x0;
+
+    //16M 일때
+    TCNT3H = 0x0;
+    TCNT3L = 0x0;
+    ICR3H = 0x4E;
+    ICR3L = 0x20;
+    OCR3AH = 0x02;
+    OCR3AL = 0x80;
+    OCR3BH = 0x02;
+    OCR3BL = 0x30;
+    //SREG = 0x80;
+
+    //Aref 사용
+    //16bit ADC register의 하위부터 10bit 채움
+    //단극성 입력 (not 차동)
+    ADMUX = 0x00;
+    //ADC변환기 ENABLE 만해놓고 시작 설정은 안함.
+    //8분주
+    ADCSRA = 0b10000011;
+    delay_ms(5);
+
+    //REGISTER INIT******************************
+
+    //TWI INIT
+    //SCL 주파수 낮춤
+    TWBR = 50;
+    TWSR = 0x0;
+
+
+    //외부인터럽트 2,3,6,7 버튼으로 쓴다. 하강엣지에서
+    EIMSK = 0b11101100;
+    EICRA = 0b10100000;
+    EICRB = 0b10100100;
+    SREG = 0x80;
+
+    //Story start!!!*****************************
+
+    lcd_init();
+
+    lcd_print_data("Air Qual", 8);
+    lcd_control_write(0xC0);
+    lcd_print_data("ity Info", 8);
+
+    delay_ms(100);
+    //PORTF |= 0x80;
+    delay_ms(400);
+    //PORTF &= ~0x80;
+    delay_ms(1000);
+    lcd_control_write(CLR_LCD);
+
+    //while(PINE.5 == 0)
+    //{
+    //    error();
+    //}
+    //delay_ms(100);
+    start_flag = 1;
+    AIR_DISPLAY(TEMP_FLAG);
+
+
+    while(1)
+    {
+
+         if(disconnect_flag == 1 && buzzer_flag == 1)
+         {
+         for(i = 0 ; i < 3 ; i++)
+            {
+                PORTF |= 0x80;
+                for(j = 0 ; j < 50 ; j++)
+                {
+                    delay_ms(10);
+                    if(disconnect_flag == 0)
+                    {
+                        break;
+                    }
+                }
+
+                PORTF &= ~0x80;
+                for(j = 0 ; j < 50 ; j++)
+                {
+                    delay_ms(10);
+                    if(disconnect_flag == 0)
+                    {
+                        break;
+                    }
+                }
+            }
+         buzzer_flag = 0;
+         }
+
+        //CRC 체크
+        //PORTD |= 0xF0;
+        //err = 1;
+        //delay_ms(5000);
+        //PORTD &= 0x0F;
+        //err = 0;
+        //delay_ms(5000);
+
+    }
+}
+//detail**************section m6*****************
+void AIR_DISPLAY(u32 data_flag)
+{
+    double data;
+    double data_temp;
+    double data_humid;
+    //if(TCCR1B != 0)
+    //{
+   //     data_flag = all_ver_data_flag;
+   // }
+
+    if(data_flag != measure_flag || pass_flag == 1)
+    {
+        if(pass_flag == 1)
+        {
+            pass_flag = 0;
+        }
+        if ((data_flag == ALL_DATA) && (TCCR1B != 0))
+        {
+            return;
+        }
+
+        END_DISPLAY();
+        if(first_star_flag != 1)
+        {
+            PORTF |= 0x80;
+            delay_ms(100);
+            PORTF &= ~0x80;
+        }
+        else
+        {
+            first_star_flag = 0;
+        }
+        if (data_flag == TEMP_FLAG )
+        {
+            //일단 먼저 표시해주고
+
+            measure_flag = TEMP_FLAG;
+            PORTD &= 0x0F;
+            PORTD |= 0b00010000;
+            data = HTU21D_DATA_Request(TEMP_DATA);
+            if (data != 0)
+            {
+                data = -46.85 + 175.72 * (((double)data)/65536.0);
+                Round_AND_Display(data);
+            }
+        }
+        else if (data_flag == HUMID_FLAG)
+        {
+            //일단 먼저 표시해주고
+
+            measure_flag = data_flag;
+            PORTD &= 0x0F;
+            PORTD |= 0b00100000;
+            data = HTU21D_DATA_Request(HUMID_DATA);
+            if (data != 0)
+            {
+                data = -6 + 125 * (((double)data)/65536.0);
+                Round_AND_Display(data);
+            }
+        }
+        else if (data_flag == DUST_DATA)
+        {
+            measure_flag = DUST_FLAG;
+            PORTD &= 0x0F;
+            PORTD |= 0b01000000;
+            first_flag = 1;
+            first_avg_flag = 1;
+            TCCR3B |= 0x02;
+        }
+        else if (data_flag == ALL_DATA)
+        {
+            pass_flag = 1;
+            measure_flag = TEMP_FLAG;
+            PORTD &= 0x0F;
+            PORTD |= 0b10000000;
+            TCNT1 = 0xA473;
+            TCCR1B = 0x05;
+            data = HTU21D_DATA_Request(TEMP_DATA);
+            if (data != 0)
+            {
+                data = -46.85 + 175.72 * (((double)data)/65536.0);
+                Round_AND_Display(data);
+            }
+            TCCR0 = 0x07;
+            return;
+        }
+        //16.384msec 주기의 인터럽트 타이머 실행
+        //이 주기마다 데이터 수집
+        TCCR0 = 0x07;
+    }
+    else
+    {
+        if (pass_flag == 1)
+        {
+             if (data_flag == TEMP_FLAG )
+            {AIR_DISPLAY(TEMP_FLAG);}
+               else if (data_flag == HUMID_FLAG )
+            {AIR_DISPLAY(HUMID_FLAG);}
+               else if (data_flag == DUST_FLAG )
+            {AIR_DISPLAY(DUST_FLAG);}
+        }
+    }
+}
+
+void Display_data(char* data_buffer)
+{
+    if(measure_flag == TEMP_FLAG)
+    {
+        lcd_control_write(0x80);
+        lcd_print_data("Temp:",5);
+        lcd_control_write(0xC0);
+        lcd_print_data(data_buffer,5);
+    }
+    else if(measure_flag == HUMID_FLAG)
+    {
+        lcd_control_write(0x80);
+        lcd_print_data("Humid:",6);
+        lcd_control_write(0xC0);
+        lcd_print_data(data_buffer,5);
+    }
+}
+
+//반올림해서 5글자 캐릭터 배열로 만들기
+char* Round_data(double num)
+{
+    u32 inum, int_buf, point_buf;
+    char data_buffer[16];
+    //소수점 첫째자리까지 살리고 둘째자리는 반올림 하겠다는 것
+    inum = (int)(10*num+0.5);
+    int_buf = inum / 10;
+    point_buf = inum % 10;
+
+    if (int_buf/100 != 0)
+    {
+        sprintf(data_buffer, "%d.%d", int_buf, point_buf);
+    }
+    else if (int_buf/10 != 0)
+    {
+        sprintf(data_buffer, " %d.%d", int_buf, point_buf);
+    }
+    else
+    {
+        sprintf(data_buffer, "  %d.%d", int_buf, point_buf);
+    }
+    return data_buffer;
+}
+
+
+
+u32 HTU21D_DATA_Request(u32 data_type)
+{
+    u32 data_msb = 0;
+    u32 data_lsb = 0;
+    u32 checksum = 0;
+    u32 recieve_data = 0;
+    u32 body = 0;
+
+    //start condition sned***********************
+    TWCR = 0xA4;
+
+    //start condition complite
+    while((TWCR & 0x80) != 0x80);
+    //error check
+    if((TWSR & 0xF8) != 0x08)
+    {
+        error();
+
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+
+    //set SLA+W***********************************
+    TWDR = 0x80;
+
+    //start send
+    TWCR = 0x84;
+
+    //finished sending
+    while((TWCR & 0x80) != 0x80);
+    if ((TWSR & 0xF8) != 0x18)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+
+    //HOLD MASTER COMUNICATION command set**********
+    TWDR = data_type;
+    //send
+    TWCR = 0x84;
+    //finished sending
+    while((TWCR & 0x80) == 0x00);
+    if((TWSR & 0xF8) != 0x28)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+
+    //Restart condition sned***********************
+    TWCR = 0xA4;
+    //start condition complite
+    while((TWCR & 0x80) == 0x00);
+    if((TWSR & 0xF8) != 0x10)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+
+    //set SLA+R***********************************
+    TWDR = 0x81;
+    //start send
+    TWCR = 0x84;
+    //finished sending
+    while((TWCR & 0x80) == 0x00);
+    if((TWSR & 0xF8) != 0x40)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+
+    ////데이타 측정중 ...
+    ////MSB 를 TWDR 에 저장 완료 ...
+    ////ACK 전송 ...
+
+    //MSB data 저장
+    TWCR = 0xC4;
+    while((TWCR & 0x80) != 0x80);
+    if((TWSR & 0xF8) != 0x50)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+    data_msb = TWDR;
+
+    //LSB data 저장
+    TWCR = 0xC4;
+    while((TWCR & 0x80) != 0x80);
+    if((TWSR & 0xF8) != 0x50)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+    data_lsb = TWDR;
+
+    //CHECKSUM data 저장
+    TWCR = 0x84;
+    while((TWCR & 0x80) != 0x80);
+    if((TWSR & 0xF8) != 0x58)
+    {
+        error();
+        TWCR = 0x94;
+        delay_ms(5);
+        return 0;
+    }
+    checksum = TWDR;
+
+    TWCR = 0x94;
+    delay_ms(5);
+
+    //데이터생성
+    recieve_data |= (data_msb << 8);
+    recieve_data |= data_lsb;
+
+    //body 는 CRC 체크할때 generator 로 XOR 하는 대상
+    body = recieve_data << 8;
+    body |= checksum;
+
+    //CRC 체크  example
+    //if (err == 1)
+    //{
+    //    body |= 0xFFF0;
+    //}
+
+    //CRC check
+    //Generator 100110001 = 0x131;
+    if (CRC_check(body, 0x131) == 1)
+    {
+       //에러 반환
+       return 0;
+    }
+
+    //data status 부분은 삭제
+    recieve_data &= 0xFFFFFFFC;
+    return recieve_data;
+}
+
+void Round_AND_Display(double num)
+{
+    u32 inum, int_buf, point_buf;
+    char tmp_buffer[16];
+    char data_buffer[16];
+    //소수점 첫째자리까지 살리고 둘째자리는 반올림 하겠다는 것
+    if((measure_flag == DUST_FLAG) && (num < 0))
+    {
+        num = 0;
+    }
+    inum = (int)(10*num+0.5);
+    int_buf = inum / 10;
+    point_buf = inum % 10;
+
+    if (int_buf/100 != 0)
+    {
+        sprintf(data_buffer, "%d.%d", int_buf, point_buf);
+    }
+    else if (int_buf/10 != 0)
+    {
+        sprintf(data_buffer, " %d.%d", int_buf, point_buf);
+    }
+    else
+    {
+        sprintf(data_buffer, "  %d.%d", int_buf, point_buf);
+    }
+
+    //|Temp:  28.3*c   |
+    //|Humid: 53.2%    |
+    //|Dust:  55.3ug/m3|
+
+    if(measure_flag == TEMP_FLAG)
+    {
+        lcd_control_write(0x80);
+        lcd_print_data("Temp: ",6);
+        lcd_print_data(data_buffer,2);
+        lcd_control_write(0xC0);
+        lcd_print_data_air(data_buffer,5);
+        lcd_print_data(spacial_char,1);
+        lcd_print_data("C   ",4);
+    }
+
+    else if(measure_flag == HUMID_FLAG)
+    {
+        lcd_control_write(0x80);
+        lcd_print_data("Humid:",6);
+        lcd_print_data(data_buffer,2);
+        lcd_control_write(0xC0);
+        lcd_print_data_air(data_buffer,5);
+        lcd_print_data("%    ",5);
+    }
+
+    else if(measure_flag == DUST_FLAG)
+    {
+        lcd_control_write(0x80);
+        lcd_print_data("Dust: ",6);
+        lcd_print_data(data_buffer,2);
+        lcd_control_write(0xC0);
+        lcd_print_data_air(data_buffer,5);
+        lcd_print_data("ug/m3",5);
+    }
+    //delay_ms(2000);
+}
+
+void lcd_print_data_air(u08* data, u08 n_bytes)
+{
+    u08 i;
+
+    // print data
+    for(i=2; i < n_bytes; i++)
+    {
+        lcd_data_write(data[i]);
+    }
+
+}
+
+interrupt [TIM0_OVF] void Measure_interrupt (void)
+{
+    double data;
+    int error_flag = 0;
+    //온도측정 루틴
+    /*if(PIND.2 == 0)
+    {
+        silent_mode_cnt += 1;
+        if(silent_mode_cnt == 122)
+        {
+            if(silent_mode_flag == 0)
+            {
+                silent_mode_flag = 1;
+            }
+            else
+            {
+                silent_mode_flag = 0;
+            }
+            silent_mode_cnt = 0;
+        }
+    }
+    */
+    if (measure_flag == TEMP_FLAG)
+    {
+        num_temp += 1;
+        //20번카운트하고 시간 두고 표시하기
+        if (num_temp >= 20)
+        {
+            data = HTU21D_DATA_Request(TEMP_DATA);
+            if(data != 0)
+            {
+                data = -46.85 + 175.72 * (((double)data)/65536.0);
+                Round_AND_Display(data);
+            }
+            num_temp = 0;
+        }
+    }
+    //습도 측정 루틴
+    else if (measure_flag == HUMID_FLAG)
+    {
+
+        num_humid += 1;
+        //20번카운트하고 시간 두고 표시하기
+        if (num_humid >= 20)
+        {
+            data = HTU21D_DATA_Request(HUMID_DATA);
+            if(data != 0)
+            {
+                data = -6 + 125 * ((double)data/65536.0);
+                Round_AND_Display(data);
+            }
+            num_humid = 0;
+        }
+    }
+}
+
+void END_DISPLAY(void)
+{
+
+
+    measure_flag = -1;
+    PORTF &= ~0x40;
+    //circul_flag = 0;
+    //lcd_control_write(CLR_LCD);
+    //TCCR1B = 0x0;
+    TCCR0 = 0x00;
+    TCNT0 = 0x00;
+    TCCR3B &= 0b11111101;
+    TCNT3H = 0x0;
+    TCNT3L = 0x0;
+
+    num_temp = 0;
+    num_humid = 0;
+    dust_avg = 0;
+    fvol_sum = 0;
+}
+
+
+void dust_adc_start()
+{
+    int idust;
+    u32 ad_val;
+    double fvol, fdust;
+    char data_buffer[16];
+
+
+    //ADC 변환시작
+    ADCSRA = 0b11000011;
+
+    //free running 모드가 아니므로 내가 읽으려면 다 읽혔을 때 까지 기다려야 한다
+    while((ADCSRA & 0x10) == 0);
+
+    dust_avg += 1;
+
+    //ADCH, ADCL 에 변환 데이타가 저장되면 진행하는데.
+    //8bit 8bit 로 나뉘어져서 저장됐으므로 값을 쉬프트해서 잘 맞춰야함
+    //a/d 변환값 읽기
+    ad_val = (int)ADCL + ((int)ADCH << 8);
+
+    //해당 비트 전압값으로 변경
+    fvol = (double)ad_val*(5.0/1024.0);
+    //fdust = (fvol - 0.35)/0.005;
+
+    fvol_sum += fvol;
+    if (dust_avg >= 50)
+    {
+        if((PORTF & 0x40)  != 0b01000000)
+        {
+            PORTF |= 0b01000000;
+        }
+        else
+        {
+            PORTF &= 0x80;
+        }
+        fvol_sum /= 50.0;
+
+        //전압에 해당하는 먼지값으로 변경
+        fdust = (fvol_sum - 0.29)/0.005;
+       // if(fdust < 0)
+        //{
+        //    disconnect_flag = 1;
+       //     return;
+        //}
+        if(first_avg_flag == 1)
+        {
+            old_data = fdust;
+            first_avg_flag = 0;
+        }
+        fdust = old_data*0.8 + fdust * 0.2;
+        old_data = fdust;
+        Round_AND_Display(fdust);
+
+        dust_avg = 0;
+        fvol_sum = 0;
+    }
+}
+
+void dust_adc_first()
+{
+
+    int idust;
+    u32 ad_val;
+    double fvol, fdust;
+    char data_buffer[16];
+
+    //ADC 변환시작
+    ADCSRA = 0b11000011;
+
+    //free running 모드가 아니므로 내가 읽으려면 다 읽혔을 때 까지 기다려야 한다
+    while((ADCSRA & 0x10) == 0);
+    //dust_avg += 1;
+
+    //ADCH, ADCL 에 변환 데이타가 저장되면 진행하는데.
+    //8bit 8bit 로 나뉘어져서 저장됐으므로 값을 쉬프트해서 잘 맞춰야함
+    //a/d 변환값 읽기
+    ad_val = (int)ADCL + ((int)ADCH << 8);
+
+    //해당 비트 전압값으로 변경
+    fvol = (double)ad_val*(5.0/1024.0);
+
+        //idust = fvol_sum;
+        //전압에 해당하는 먼지값으로 변경
+    fdust = (fvol - 0.29)/0.005;
+    if(fdust <= 0)
+    {
+        fdust = 20;
+    }
+
+    if(old_data != 0)
+    {
+        fdust = old_data*0.8 + fdust * 0.2;
+        old_data = fdust;
+    }
+    else
+    {
+        fdust = 15*0.5 + fdust * 0.5;
+        old_data = fdust;
+    }
+        Round_AND_Display(fdust);
+
+}
+
+u32 CRC_check(u32 body, u32 gener)
+{
+    //CRC 체크 끝났음을 알리는  flag
+    u32 end_flag = 0;
+    //error_flag
+    u32 error_flag = 0;
+    //for 문 이터레이터
+    u32 i = 0;
+    //쉬프트하면 body가 바뀌므로 임시저장 공간에 저장
+    u32 tmp = 0;
+
+    //0~15번 쉬프트 하면서 1인지 보고 1이면 마스킹해서 XOR 해서 개편하고
+    //다시 0~15번 쉬프트하면서 1이 어딘지 체크한다. //쉬프트수는 15번 쉬프트 수는
+    //15번다 해도 나머지가 0으로 안끝나면 에러
+    //그러면 유효한 데이타로 취급하지않고 다음 수집으로 넘어감.
+
+    if ((body & msb_mask) == 0x800000)
+    {
+        body = (body & ~mask_arr[i]) | ((gener << shift_arr[i]) ^ (body & mask_arr[i]));
+    }
+
+    tmp = body;
+    while (1)
+    {
+        body = tmp;
+        i = 1;
+        for (i = 1; i < 16; i++)
+        {
+            //test_data(body);
+            //쉬프트
+            body = body << 1;
+            //1인지 체크
+            //test_data((body & msb_mask));
+            if ((body & msb_mask) == 0x800000)
+            {
+
+                //1이면 마스킹 and XOR 후 저장
+                //tmp에다가는 유효한 데이타만 저장
+                tmp = (tmp & ~mask_arr[i]) | ((gener << shift_arr[i]) ^ (tmp & mask_arr[i]));
+                //업뎃 하고 tmp = 0 이면 endflag = 1 , break;
+                if (tmp == 0)
+                {
+                    end_flag = 1;
+                }
+                break;
+            }
+            //만약 막턴인데도 tmp 가 0이 안되었으면 에러지.
+            if ((i == 15) && (tmp != 0))
+            {
+
+                error_flag = 1;
+                end_flag = 1;
+                break;
+            }
+        }
+        //만약 endflag ON 이면
+        //종료
+        if (end_flag == 1)
+        {
+            break;
+        }
+    }
+    //에러플레그로 에런지 아닌지 판단.
+    return error_flag;
+}
+
