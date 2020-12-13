@@ -9,6 +9,13 @@
 3. 이렇게 만들어진 제품의 동작영상을 아래 링크에서 볼 수 있습니다.
 https://blog.naver.com/PostView.nhn?blogId=qorwp37&Redirect=View&logNo=222172059215&categoryNo=1&isAfterWrite=true&isMrblogPost=false&isHappyBeanLeverage=true&contentLength=2703
 
+
+[주요 사용 부품] 
+1. MCU : ATmega128A
+2. Humidity/Temperature Sensor : HTU21D (I2C)
+3. Dust sensor : GP2Y1010AU0F (ADC) 
+
+
 [환경표시기 회로도]
 클릭하면 훨씬 더 잘 보입니다.
 <img src="https://user-images.githubusercontent.com/58552452/102001432-8e022b80-3d35-11eb-84a0-17b4a784c70e.PNG" width="90%"></img>
